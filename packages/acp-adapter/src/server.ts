@@ -869,6 +869,42 @@ export class AcpServer implements Agent {
       await acpSession.steer(prompt as ContentBlock[]);
       return { accepted: true };
     }
+    if (method === '_kimi/session/register_tools') {
+      const sessionId = params['sessionId'];
+      const tools = parseHostTools(params['tools']);
+      if (typeof sessionId !== 'string' || tools === undefined) {
+        throw RequestError.invalidParams(
+          params,
+          '_kimi/session/register_tools requires sessionId and tools',
+        );
+      }
+      const acpSession = this.sessions.get(sessionId);
+      if (!acpSession) {
+        throw RequestError.invalidParams({ sessionId }, `Unknown sessionId: ${sessionId}`);
+      }
+      await acpSession.registerTools(tools);
+      return { registered: tools.map((tool) => tool.name) };
+    }
+    if (method === '_kimi/session/unregister_tools') {
+      const sessionId = params['sessionId'];
+      const names = params['names'];
+      if (
+        typeof sessionId !== 'string' ||
+        !Array.isArray(names) ||
+        !names.every((name) => typeof name === 'string')
+      ) {
+        throw RequestError.invalidParams(
+          params,
+          '_kimi/session/unregister_tools requires sessionId and names',
+        );
+      }
+      const acpSession = this.sessions.get(sessionId);
+      if (!acpSession) {
+        throw RequestError.invalidParams({ sessionId }, `Unknown sessionId: ${sessionId}`);
+      }
+      await acpSession.unregisterTools(names);
+      return { unregistered: names };
+    }
     throw RequestError.methodNotFound(method);
   }
 
@@ -1056,6 +1092,40 @@ export class AcpServer implements Agent {
     }
   }
 
+}
+
+interface HostToolDefinition {
+  readonly name: string;
+  readonly description: string;
+  readonly parameters: Record<string, unknown>;
+  readonly disclosure?: 'inline' | 'deferred';
+}
+
+function parseHostTools(value: unknown): readonly HostToolDefinition[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const tools: HostToolDefinition[] = [];
+  for (const item of value) {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) return undefined;
+    const record = item as Record<string, unknown>;
+    const { name, description, parameters, disclosure } = record;
+    if (
+      typeof name !== 'string' ||
+      typeof description !== 'string' ||
+      parameters === null ||
+      typeof parameters !== 'object' ||
+      Array.isArray(parameters) ||
+      (disclosure !== undefined && disclosure !== 'inline' && disclosure !== 'deferred')
+    ) {
+      return undefined;
+    }
+    tools.push({
+      name,
+      description,
+      parameters: parameters as Record<string, unknown>,
+      ...(disclosure === undefined ? {} : { disclosure }),
+    });
+  }
+  return tools;
 }
 
 /**

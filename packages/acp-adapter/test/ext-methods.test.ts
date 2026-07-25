@@ -13,12 +13,23 @@ import {
   type WriteTextFileRequest,
   type WriteTextFileResponse,
 } from '@agentclientprotocol/sdk';
-import type { KimiHarness, Session } from '@moonshot-ai/kimi-code-sdk';
+import type {
+  KimiHarness,
+  Session,
+  SessionToolDefinition,
+} from '@moonshot-ai/kimi-code-sdk';
 
 import { AcpServer } from '../src/server';
 import { AUTHED_STATUS } from './_helpers/harness-stubs';
 
 class StubClient implements Client {
+  constructor(
+    private readonly onExtMethod?: (
+      method: string,
+      params: Record<string, unknown>,
+    ) => Promise<Record<string, unknown>>,
+  ) {}
+
   async requestPermission(_p: RequestPermissionRequest): Promise<RequestPermissionResponse> {
     throw new Error('StubClient.requestPermission should not be called in ext-methods test');
   }
@@ -30,6 +41,15 @@ class StubClient implements Client {
   }
   async readTextFile(_p: ReadTextFileRequest): Promise<ReadTextFileResponse> {
     throw new Error('StubClient.readTextFile should not be called in ext-methods test');
+  }
+  async extMethod(
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    if (this.onExtMethod === undefined) {
+      throw new Error(`StubClient.extMethod should not be called: ${method}`);
+    }
+    return this.onExtMethod(method, params);
   }
 }
 
@@ -107,5 +127,59 @@ describe('AcpServer ext method surface', () => {
       }),
     ).resolves.toEqual({ accepted: true });
     expect(steered).toEqual([[{ type: 'text', text: 'change direction' }]]);
+  });
+
+  it('registers host tools and routes their execution back to the ACP client', async () => {
+    let registered: SessionToolDefinition | undefined;
+    const session = {
+      id: 'sess-tools',
+      registerTool: async (tool: SessionToolDefinition) => {
+        registered = tool;
+      },
+    } as unknown as Session;
+    const harness = {
+      auth: { status: async () => AUTHED_STATUS },
+      createSession: async () => session,
+    } as unknown as KimiHarness;
+    const reverseCalls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const { agentStream, clientStream } = makeInMemoryStreamPair();
+
+    new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
+    const client = new ClientSideConnection(
+      (_a) => new StubClient(async (method, params) => {
+        reverseCalls.push({ method, params });
+        return { output: 'done' };
+      }),
+      clientStream,
+    );
+    await client.newSession({ cwd: '/tmp/x', mcpServers: [] });
+
+    await expect(
+      client.extMethod('_kimi/session/register_tools', {
+        sessionId: session.id,
+        tools: [{
+          name: 'exec_async',
+          description: 'Run a background task.',
+          parameters: { type: 'object', properties: {} },
+        }],
+      }),
+    ).resolves.toEqual({ registered: ['exec_async'] });
+
+    await expect(registered?.execute({
+      name: 'exec_async',
+      toolCallId: 'call-1',
+      turnId: 7,
+      args: { command: 'echo ok' },
+    })).resolves.toEqual({ output: 'done' });
+    expect(reverseCalls).toEqual([{
+      method: '_kimi/tool/call',
+      params: {
+        sessionId: session.id,
+        name: 'exec_async',
+        toolCallId: 'call-1',
+        turnId: 7,
+        args: { command: 'echo ok' },
+      },
+    }]);
   });
 });

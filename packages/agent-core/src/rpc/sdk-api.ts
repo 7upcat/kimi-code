@@ -61,6 +61,7 @@ export interface QuestionRequest {
 export interface ToolCallRequest {
   readonly turnId?: number | undefined;
   readonly toolCallId: string;
+  readonly name: string;
   readonly args: unknown;
 }
 

@@ -24,6 +24,7 @@ import {
   type QuestionRequest,
   type Session,
   type SessionStatus,
+  type SessionToolDefinition,
   type SessionUsage,
 } from '@moonshot-ai/kimi-code-sdk';
 
@@ -844,6 +845,35 @@ export class AcpSession {
     await this.session.steer(await this.convertPromptBlocks(blocks));
   }
 
+  async registerTools(tools: readonly Omit<SessionToolDefinition, 'execute'>[]): Promise<void> {
+    if (typeof this.session.registerTool !== 'function') {
+      throw new Error('This Kimi Code SDK build does not support host-registered tools.');
+    }
+    for (const tool of tools) {
+      await this.session.registerTool({
+        ...tool,
+        execute: async (request) => {
+          const response = await this.conn.extMethod('_kimi/tool/call', {
+            sessionId: this.id,
+            turnId: request.turnId,
+            toolCallId: request.toolCallId,
+            name: request.name,
+            args: request.args,
+          });
+          return {
+            output: normalizeHostToolOutput(response['output']),
+            ...(response['isError'] === true ? { isError: true } : {}),
+          };
+        },
+      });
+    }
+  }
+
+  async unregisterTools(names: readonly string[]): Promise<void> {
+    if (typeof this.session.unregisterTool !== 'function') return;
+    await Promise.all(names.map((name) => this.session.unregisterTool(name)));
+  }
+
   private async convertPromptBlocks(
     blocks: readonly ContentBlock[],
   ): Promise<readonly PromptPart[]> {
@@ -1511,6 +1541,12 @@ export class AcpSession {
       });
     }
   }
+}
+
+function normalizeHostToolOutput(output: unknown): string {
+  if (typeof output === 'string') return output;
+  if (output === undefined) return '';
+  return JSON.stringify(output);
 }
 
 /**

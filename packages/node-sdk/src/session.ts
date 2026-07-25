@@ -3,6 +3,9 @@ import {
   KimiError,
   type AgentContextData,
   type KimiErrorCode,
+  type RegisterToolPayload,
+  type ToolCallRequest,
+  type ToolCallResponse,
   type SwarmModeTrigger,
 } from '@moonshot-ai/agent-core';
 
@@ -39,6 +42,10 @@ import type {
 } from '#/types';
 
 const MAIN_AGENT_ID = 'main';
+
+export interface SessionToolDefinition extends RegisterToolPayload {
+  readonly execute: (request: ToolCallRequest) => Promise<ToolCallResponse> | ToolCallResponse;
+}
 
 export interface SessionOptions {
   readonly id: string;
@@ -101,6 +108,19 @@ export class Session {
   setQuestionHandler(handler: QuestionHandler | undefined): void {
     this.ensureOpen();
     this.rpc.setQuestionHandler(this.id, handler);
+  }
+
+  async registerTool(definition: SessionToolDefinition): Promise<void> {
+    this.ensureOpen();
+    await this.rpc.registerTool({
+      sessionId: this.id,
+      ...definition,
+    });
+  }
+
+  async unregisterTool(name: string): Promise<void> {
+    this.ensureOpen();
+    await this.rpc.unregisterTool({ sessionId: this.id, name });
   }
 
   async prompt(input: string | PromptInput): Promise<void> {

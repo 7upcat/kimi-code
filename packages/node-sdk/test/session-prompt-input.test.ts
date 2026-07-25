@@ -11,6 +11,7 @@ class CapturingRpc extends SDKRpcClientBase {
   readonly getPlanCalls: unknown[] = [];
   readonly clearPlanCalls: unknown[] = [];
   readonly setModelCalls: unknown[] = [];
+  readonly registerToolCalls: unknown[] = [];
   private getRpcDelay: Promise<void> | undefined;
   private getRpcCallCount = 0;
   private readonly getRpcWaiters = new Set<() => void>();
@@ -43,6 +44,9 @@ class CapturingRpc extends SDKRpcClientBase {
         this.setModelCalls.push(input);
         return { model: 'captured-model' };
       },
+      registerTool: async (input: unknown) => {
+        this.registerToolCalls.push(input);
+      },
       enterPlan: async (input: unknown) => {
         this.enterPlanCalls.push(input);
       },
@@ -61,6 +65,37 @@ class CapturingRpc extends SDKRpcClientBase {
 }
 
 describe('Session.prompt input normalization', () => {
+  it('registers and executes a host tool through the SDK reverse channel', async () => {
+    const rpc = new CapturingRpc();
+    const session = new Session({
+      id: 'ses_host_tool',
+      workDir: '/tmp/work',
+      rpc,
+    });
+
+    await session.registerTool({
+      name: 'lookup',
+      description: 'Look up a value.',
+      parameters: { type: 'object', properties: { query: { type: 'string' } } },
+      execute: async (request) => ({ output: `found:${String(request.args)}` }),
+    });
+
+    expect(rpc.registerToolCalls).toEqual([{
+      sessionId: 'ses_host_tool',
+      agentId: 'main',
+      name: 'lookup',
+      description: 'Look up a value.',
+      parameters: { type: 'object', properties: { query: { type: 'string' } } },
+    }]);
+    await expect(rpc.toolCall({
+      sessionId: 'ses_host_tool',
+      agentId: 'main',
+      name: 'lookup',
+      toolCallId: 'call-1',
+      args: 'value',
+    })).resolves.toEqual({ output: 'found:value' });
+  });
+
   it('passes multimodal prompt parts through to the core RPC client', async () => {
     const prompt = vi.fn(async () => {});
     const session = new Session({
