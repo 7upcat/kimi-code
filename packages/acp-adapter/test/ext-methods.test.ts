@@ -13,9 +13,10 @@ import {
   type WriteTextFileRequest,
   type WriteTextFileResponse,
 } from '@agentclientprotocol/sdk';
-import type { KimiHarness } from '@moonshot-ai/kimi-code-sdk';
+import type { KimiHarness, Session } from '@moonshot-ai/kimi-code-sdk';
 
 import { AcpServer } from '../src/server';
+import { AUTHED_STATUS } from './_helpers/harness-stubs';
 
 class StubClient implements Client {
   async requestPermission(_p: RequestPermissionRequest): Promise<RequestPermissionResponse> {
@@ -79,5 +80,32 @@ describe('AcpServer ext method surface', () => {
     await expect(client.extMethod('myorg.unsupported', {})).rejects.toMatchObject({
       code: -32601,
     });
+  });
+
+  it('routes _kimi/session/steer to the active SDK session', async () => {
+    const steered: unknown[] = [];
+    const session = {
+      id: 'sess-steer',
+      steer: async (input: unknown) => {
+        steered.push(input);
+      },
+    } as unknown as Session;
+    const harness = {
+      auth: { status: async () => AUTHED_STATUS },
+      createSession: async () => session,
+    } as unknown as KimiHarness;
+    const { agentStream, clientStream } = makeInMemoryStreamPair();
+
+    new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
+    const client = new ClientSideConnection((_a) => new StubClient(), clientStream);
+    await client.newSession({ cwd: '/tmp/x', mcpServers: [] });
+
+    await expect(
+      client.extMethod('_kimi/session/steer', {
+        sessionId: session.id,
+        prompt: [{ type: 'text', text: 'change direction' }],
+      }),
+    ).resolves.toEqual({ accepted: true });
+    expect(steered).toEqual([[{ type: 'text', text: 'change direction' }]]);
   });
 });

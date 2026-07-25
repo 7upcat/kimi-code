@@ -44,12 +44,13 @@ export function registerAcpCommand(parent: Command): void {
       'Run the device-code login flow then exit (entry point for ACP terminal-auth).',
       false,
     )
-    .action(async (opts: { login?: boolean }) => {
+    .action(async (opts: { login?: boolean }, command: Command) => {
       if (opts.login === true) {
         await runLoginFlow();
         return;
       }
       const identity = createKimiCodeHostIdentity();
+      const model = command.optsWithGlobals<{ model?: string }>().model;
       const harness = createKimiHarness({
         identity,
         uiMode: 'acp',
@@ -112,6 +113,7 @@ export function registerAcpCommand(parent: Command): void {
         await runAcpServer(harness, {
           agentInfo: { name: 'Kimi Code CLI', version: getVersion() },
           slashCommands: resolveSlashCommands,
+          ...(model ? { preferredModel: model } : {}),
           ...(terminalAuthEnv ? { terminalAuthEnv } : {}),
           ...(legacyCommand !== undefined && legacyCommand.length > 0
             ? { terminalAuthLegacyCommand: legacyCommand }

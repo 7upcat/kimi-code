@@ -129,6 +129,22 @@ describe('kimi acp', () => {
     expect(optsArg.terminalAuthLegacyCommand).toBe(process.argv[1]);
   });
 
+  it('forwards the global --model option to the ACP server', async () => {
+    const program = new Command('kimi')
+      .option('-m, --model <model>')
+      .exitOverride();
+    registerAcpCommand(program);
+
+    await expect(
+      program.parseAsync(['node', 'kimi', '--model', 'kimi-code/k3', 'acp']),
+    ).rejects.toThrow(ExitCalled);
+
+    const optsArg = vi.mocked(runAcpServer).mock.calls[0]?.[1];
+    expect(optsArg).toEqual(expect.objectContaining({
+      preferredModel: 'kimi-code/k3',
+    }));
+  });
+
   it('exits without starting the ACP server when --login is passed', async () => {
     // Stub the harness module so runLoginFlow doesn't hit a real OAuth
     // endpoint: harness.auth.login resolves immediately and triggers exit 0.

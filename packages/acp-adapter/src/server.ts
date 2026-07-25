@@ -20,6 +20,7 @@ import {
   type AvailableCommand,
   type CancelNotification,
   type ClientCapabilities,
+  type ContentBlock,
   type Implementation,
   type InitializeRequest,
   type InitializeResponse,
@@ -225,6 +226,7 @@ export class AcpServer implements Agent {
   private readonly agentInfo: Implementation | undefined;
   private readonly terminalAuthEnv: Readonly<Record<string, string>> | undefined;
   private readonly terminalAuthLegacyCommand: string | undefined;
+  private readonly preferredModel: string | undefined;
   private readonly resolveSlashCommands: (
     session: Session,
   ) => Promise<ResolvedSlashCommands>;
@@ -275,11 +277,13 @@ export class AcpServer implements Agent {
        * exploration of `~/.kimi-code/skills/`.
        */
       slashCommands?: SlashCommandsResolver;
+      preferredModel?: string;
     },
   ) {
     this.agentInfo = opts?.agentInfo;
     this.terminalAuthEnv = opts?.terminalAuthEnv;
     this.terminalAuthLegacyCommand = opts?.terminalAuthLegacyCommand;
+    this.preferredModel = opts?.preferredModel;
     const slash = opts?.slashCommands;
     this.resolveSlashCommands =
       typeof slash === 'function'
@@ -377,6 +381,7 @@ export class AcpServer implements Agent {
     const session = await this.harness.createSession({
       id: sessionId,
       workDir: params.cwd,
+      model: this.preferredModel,
       kaos: acpKaos,
       persistenceKaos,
       sessionStartedProperties: { mode: 'new' },
@@ -554,6 +559,9 @@ export class AcpServer implements Agent {
         // kernel-only field that the SDK forwards via spread.
         mcpServers,
       });
+      if (this.preferredModel !== undefined) {
+        await session.setModel(this.preferredModel);
+      }
     } catch (err) {
       // Surface unknown-session as invalid_params so the JSON-RPC layer
       // returns a structured failure rather than a generic internal
@@ -843,8 +851,24 @@ export class AcpServer implements Agent {
    */
   async extMethod(
     method: string,
-    _params: Record<string, unknown>,
+    params: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
+    if (method === '_kimi/session/steer') {
+      const sessionId = params['sessionId'];
+      const prompt = params['prompt'];
+      if (typeof sessionId !== 'string' || !Array.isArray(prompt)) {
+        throw RequestError.invalidParams(
+          params,
+          '_kimi/session/steer requires sessionId and prompt',
+        );
+      }
+      const acpSession = this.sessions.get(sessionId);
+      if (!acpSession) {
+        throw RequestError.invalidParams({ sessionId }, `Unknown sessionId: ${sessionId}`);
+      }
+      await acpSession.steer(prompt as ContentBlock[]);
+      return { accepted: true };
+    }
     throw RequestError.methodNotFound(method);
   }
 
@@ -1048,6 +1072,7 @@ export async function runAcpServerWithStream(
     terminalAuthEnv?: Readonly<Record<string, string>>;
     terminalAuthLegacyCommand?: string;
     slashCommands?: SlashCommandsResolver;
+    preferredModel?: string;
   },
 ): Promise<void> {
   const conn = new AgentSideConnection((c) => new AcpServer(harness, c, opts), stream);
@@ -1102,6 +1127,7 @@ export async function runAcpServer(
      * palette is populated. See {@link AcpServer} ctor for details.
      */
     slashCommands?: SlashCommandsResolver;
+    preferredModel?: string;
     /**
      * @internal Test seam — supply a fake `EventEmitter` (or a
      * subset that exposes `.once` / `.off`) to drive SIGINT / SIGTERM
@@ -1158,6 +1184,7 @@ export async function runAcpServer(
       terminalAuthEnv: opts?.terminalAuthEnv,
       terminalAuthLegacyCommand: opts?.terminalAuthLegacyCommand,
       slashCommands: opts?.slashCommands,
+      preferredModel: opts?.preferredModel,
     });
   } finally {
     // Uninstall BEFORE the final cleanup so a second SIGINT (a user

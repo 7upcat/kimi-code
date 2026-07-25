@@ -802,20 +802,7 @@ export class AcpSession {
     this.pendingPromptAborts.add(pending);
     let parts: readonly PromptPart[];
     try {
-      const sessionDir = this.session.summary?.sessionDir;
-      const track = this.track;
-      parts = await compressPromptImageParts(acpBlocksToPromptParts(blocks), {
-        originalsDir:
-          sessionDir === undefined ? undefined : sessionMediaOriginalsDir(sessionDir),
-        maxImageEdgePx: this.harness?.imageLimits?.maxEdgePx(),
-        telemetry:
-          track === undefined
-            ? undefined
-            : {
-                track: (event, properties) =>
-                  track(event, properties === undefined ? undefined : { ...properties }),
-              },
-      });
+      parts = await this.convertPromptBlocks(blocks);
     } finally {
       this.pendingPromptAborts.delete(pending);
     }
@@ -851,6 +838,29 @@ export class AcpSession {
     }
 
     return this.runTurnBody(sessionId, conn, () => this.session.prompt(parts));
+  }
+
+  async steer(blocks: readonly ContentBlock[]): Promise<void> {
+    await this.session.steer(await this.convertPromptBlocks(blocks));
+  }
+
+  private async convertPromptBlocks(
+    blocks: readonly ContentBlock[],
+  ): Promise<readonly PromptPart[]> {
+    const sessionDir = this.session.summary?.sessionDir;
+    const track = this.track;
+    return compressPromptImageParts(acpBlocksToPromptParts(blocks), {
+      originalsDir:
+        sessionDir === undefined ? undefined : sessionMediaOriginalsDir(sessionDir),
+      maxImageEdgePx: this.harness?.imageLimits?.maxEdgePx(),
+      telemetry:
+        track === undefined
+          ? undefined
+          : {
+              track: (event, properties) =>
+                track(event, properties === undefined ? undefined : { ...properties }),
+            },
+    });
   }
 
   private async runBuiltInCommand(
@@ -984,12 +994,12 @@ export class AcpSession {
    * subscription's `turn.started` / `turn.ended` semantics apply
    * uniformly.
    */
-  private runTurnBody(
+  private async runTurnBody(
     sessionId: string,
     conn: AgentSideConnection,
     kick: () => Promise<unknown>,
   ): Promise<PromptResponse> {
-    return new Promise<PromptResponse>((resolve, reject) => {
+    const response = await new Promise<PromptResponse>((resolve, reject) => {
       let settled = false;
       const isFromMainAgent = (event: { agentId?: string }): boolean =>
         event.agentId === undefined || event.agentId === MAIN_AGENT_ID;
@@ -1280,6 +1290,59 @@ export class AcpSession {
         reject(mapPromptError(err, sessionId));
       });
     });
+    if (
+      typeof this.session.getUsage !== 'function' ||
+      typeof this.session.getStatus !== 'function'
+    ) {
+      return response;
+    }
+    try {
+      const [usage, status] = await Promise.all([
+        this.session.getUsage(),
+        this.session.getStatus(),
+      ]);
+      const total = usage.total;
+      const context = {
+        used: status.contextTokens,
+        size: status.maxContextTokens,
+      };
+      await conn.sessionUpdate({
+        sessionId,
+        update: {
+          sessionUpdate: 'usage_update',
+          ...context,
+        },
+      });
+      return {
+        ...response,
+        ...(total === undefined
+          ? {}
+          : {
+              usage: {
+                inputTokens:
+                  total.inputOther + total.inputCacheRead + total.inputCacheCreation,
+                outputTokens: total.output,
+                cachedReadTokens: total.inputCacheRead,
+                cachedWriteTokens: total.inputCacheCreation,
+                totalTokens:
+                  total.inputOther +
+                  total.inputCacheRead +
+                  total.inputCacheCreation +
+                  total.output,
+              },
+            }),
+        _meta: {
+          ...(response._meta ?? {}),
+          '_kimi/context': context,
+        },
+      };
+    } catch (error) {
+      log.warn('acp: failed to attach usage to prompt response', {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return response;
+    }
   }
 
   /**

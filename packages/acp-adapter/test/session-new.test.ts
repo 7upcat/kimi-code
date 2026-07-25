@@ -46,7 +46,12 @@ function makeInMemoryStreamPair(): {
 }
 
 interface CapturedCall {
-  options: { id?: string; workDir: string; mcpServers?: Record<string, unknown> };
+  options: {
+    id?: string;
+    workDir: string;
+    model?: string;
+    mcpServers?: Record<string, unknown>;
+  };
 }
 
 function makeHarness(
@@ -155,6 +160,21 @@ describe('AcpServer session/new', () => {
     expect(captured[0]?.options.id).toBe(first.sessionId);
     expect(captured[1]?.options.workDir).toBe('/tmp/b');
     expect(captured[1]?.options.id).toBe(second.sessionId);
+  });
+
+  it('forwards the preferred ACP model into session creation', async () => {
+    const captured: CapturedCall[] = [];
+    const { harness } = makeHarness('sess-model', captured);
+    const { agentStream, clientStream } = makeInMemoryStreamPair();
+    new AgentSideConnection(
+      (c) => new AcpServer(harness, c, { preferredModel: 'kimi-code/k3' }),
+      agentStream,
+    );
+    const client = new ClientSideConnection((_a) => new StubClient(), clientStream);
+
+    await client.newSession({ cwd: '/tmp/work', mcpServers: [] });
+
+    expect(captured[0]?.options.model).toBe('kimi-code/k3');
   });
 
   it('advertises configOptions (PLAN D11 + Phase 15 thinking toggle) — model + thinking + mode under the unified SessionConfigOption surface', async () => {
